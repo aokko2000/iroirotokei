@@ -8,7 +8,10 @@
 //   左ボタン(KEYA/黄) 長押し ... モード切替 (色時計→色づくり→ストップウォッチ)
 //   [色時計]    左短押し: LEDのオン/オフ
 //               左ダブルクリック: LED明るさ調整画面 (左:暗く 右:明るく、3秒放置で決定)
-//               右短押し: 音のオン/オフ (設定はすべて保存される)
+//               右短押し: 音のオン/オフ
+//               右ダブルクリック: 音量調整画面 (設定はすべて保存される)
+//   [色ランダム] 時計は動いたまま、背景色がランダムに漂う。LEDもランダムにきらめく
+//               右短押し: 今すぐ次の色へ / 左短押し: LEDのオン/オフ
 //               右長押し: 1日の色を約48秒で再生 (タイムラプス)
 //               画面をタッチしてなぞる: その角度の時刻の色を覗く (タイムトラベル)
 //   [色づくり]  左短押し: パレットの色を選択 / 右短押し: 選んだ色を混ぜる
@@ -37,6 +40,7 @@
 #include <FastLED.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <driver/gpio.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -51,7 +55,7 @@ static constexpr int R  = 233;
 // ---------------------------------------------------------------------
 // モード
 // ---------------------------------------------------------------------
-enum Mode : uint8_t { MODE_CLOCK, MODE_MIXER, MODE_TILT, MODE_VOICE, MODE_STOPWATCH, MODE_COUNT };
+enum Mode : uint8_t { MODE_CLOCK, MODE_RANDOM, MODE_MIXER, MODE_TILT, MODE_VOICE, MODE_STOPWATCH, MODE_COUNT };
 static Mode mode = MODE_CLOCK;
 static bool fullRedraw = true;
 
@@ -116,6 +120,7 @@ static Preferences prefs;
 static bool soundOn = true;
 static bool spkOk   = false;
 static bool speakerActive = true;  // 声の色モード中はマイクと交代でオフになる
+static uint8_t sndVol = 110;       // 音量 4〜255 (NVSから復元)
 
 struct ToneStep { uint16_t freq; uint16_t durMs; uint16_t gapMs; };
 static ToneStep sndSeq[6];
@@ -449,7 +454,8 @@ static const char *WDAY_JP[] = {"日", "月", "火", "水", "木", "金", "土"}
 //   CS_SCRUB : タッチで文字盤をなぞって好きな時刻の色を覗く (タイムトラベル)
 //   CS_LAPSE : 右長押しで1日の色を約48秒で再生 (タイムラプス)
 //   CS_LEDADJ: 左ダブルクリックでLEDの明るさ調整
-enum ClockSub : uint8_t { CS_NORMAL, CS_SCRUB, CS_LAPSE, CS_LEDADJ };
+//   CS_VOLADJ: 右ダブルクリックで音量調整
+enum ClockSub : uint8_t { CS_NORMAL, CS_SCRUB, CS_LAPSE, CS_LEDADJ, CS_VOLADJ };
 static ClockSub clockSub      = CS_NORMAL;
 static bool     touchOk       = false;
 static uint32_t lapseStartMs  = 0;
@@ -496,8 +502,8 @@ static void drawColorPreview(uint32_t sec, const char *label)
     }
 }
 
-// --- LEDの明るさ調整画面 (左:暗く 右:明るく、3秒放置で決定) ---
-static void drawLedAdjust()
+// --- 調整画面 (LED明るさ/音量 共用。左:下げる 右:上げる、3秒放置で決定) ---
+static void drawAdjustGauge(const char *title, uint8_t val, uint32_t barColor)
 {
     if (!ledAdjDirty && !fullRedraw) return;
     if (fullRedraw) {
@@ -506,17 +512,17 @@ static void drawLedAdjust()
         M5.Display.setFont(&fonts::lgfxJapanGothic_28);
         M5.Display.setTextSize(1);
         M5.Display.setTextColor(0xFFFFFFu, 0x101010u);
-        M5.Display.drawString("LEDの明るさ", CX, 70);
+        M5.Display.drawString(title, CX, 70);
         M5.Display.setFont(&fonts::lgfxJapanGothic_24);
         M5.Display.setTextColor(0x808080u, 0x101010u);
-        M5.Display.drawString("左: 暗く   右: 明るく", CX, 360);
+        M5.Display.drawString("左: 下げる   右: 上げる", CX, 360);
         M5.Display.drawString("3秒そのままで決定", CX, 396);
         fullRedraw = false;
     }
     ledAdjDirty = false;
 
-    float f = ledLevel / 255.f;
-    M5.Display.fillArc(CX, CY, 214, 200, -90, -90 + f * 360, 0xF9C46Bu);
+    float f = val / 255.f;
+    M5.Display.fillArc(CX, CY, 214, 200, -90, -90 + f * 360, barColor);
     M5.Display.fillArc(CX, CY, 214, 200, -90 + f * 360, 270, 0x303030u);
 
     char buf[8];
@@ -530,29 +536,58 @@ static void drawLedAdjust()
     M5.Display.setTextSize(1);
 }
 
-static void ledAdjustLoop()
+// 押されたボタンから増減量を返す (押しっぱなしで連続変化)
+static int adjustDelta()
 {
     static uint32_t nextRep = 0;
     int dir = 0;
     if (btnR().isPressed())      dir = +1;
     else if (btnL().isPressed()) dir = -1;
-    if (dir) {
-        uint32_t now = millis();
-        bool first = btnR().wasPressed() || btnL().wasPressed();
-        if (first || now >= nextRep) {
-            nextRep = now + (first ? 350 : 45);   // 押しっぱなしで連続変化
-            int v = ledLevel + dir * 6;
-            ledLevel = uint8_t(v < 4 ? 4 : (v > 255 ? 255 : v));
-            ledOn = true;
-            ledAdjDirty = true;
-            ledAdjLastInput = now;
-        }
+    if (!dir) return 0;
+    uint32_t now = millis();
+    bool first = btnR().wasPressed() || btnL().wasPressed();
+    if (!first && now < nextRep) return 0;
+    nextRep = now + (first ? 350 : 45);
+    return dir * 6;
+}
+
+static void ledAdjustLoop()
+{
+    int d = adjustDelta();
+    if (d) {
+        int v = ledLevel + d;
+        ledLevel = uint8_t(v < 4 ? 4 : (v > 255 ? 255 : v));
+        ledOn = true;
+        ledAdjDirty = true;
+        ledAdjLastInput = millis();
     }
-    drawLedAdjust();
+    drawAdjustGauge("LEDの明るさ", ledLevel, 0xF9C46Bu);
 
     if (millis() - ledAdjLastInput > 3000) {   // 決定して時計へ戻る
         prefs.putUChar("ledv", ledLevel);
         prefs.putBool("ledon", true);
+        clockSub = CS_NORMAL;
+        clockResetDraw();
+    }
+}
+
+static void volAdjustLoop()
+{
+    int d = adjustDelta();
+    if (d) {
+        int v = sndVol + d;
+        sndVol = uint8_t(v < 4 ? 4 : (v > 255 ? 255 : v));
+        if (spkOk && speakerActive) {
+            M5.Speaker.setVolume(sndVol);
+            M5.Speaker.tone(1319, 50);   // 音量確認のビープ
+        }
+        ledAdjDirty = true;
+        ledAdjLastInput = millis();
+    }
+    drawAdjustGauge("音量", sndVol, 0xFF6350u);
+
+    if (millis() - ledAdjLastInput > 3000) {   // 決定して時計へ戻る
+        prefs.putUChar("vol", sndVol);
         clockSub = CS_NORMAL;
         clockResetDraw();
     }
@@ -985,6 +1020,67 @@ static void voiceLoop()
 }
 
 // ---------------------------------------------------------------------
+// モード: 色ランダム (時計は動いたまま、背景色がランダムに漂う)
+// ---------------------------------------------------------------------
+static RGB8     rndFrom = {60, 30, 110}, rndTo = {60, 30, 110};
+static uint32_t rndStartMs = 0;
+static uint32_t rndDurMs   = 1;
+static RGB8     rndCur     = {60, 30, 110};   // LEDランダムと画面で共有
+static RGB8     lastRndBg  = {1, 1, 1};
+static int      lastRndSec = -1;
+
+static void rndPickNext()
+{
+    rndFrom = rndCur;
+    hsv2rgb(random(0, 360), 0.75f + random(0, 25) / 100.f,
+            0.45f + random(0, 50) / 100.f, rndTo);
+    rndStartMs = millis();
+    rndDurMs   = 4000 + random(0, 6000);   // 4〜10秒かけて次の色へ
+}
+
+static void drawRandomClock()
+{
+    static uint32_t lastTick = 0;
+    if (millis() - lastTick < 100) return;
+    lastTick = millis();
+
+    // 色の補間
+    float f = float(millis() - rndStartMs) / rndDurMs;
+    if (f >= 1.f) { rndPickNext(); f = 0.f; }
+    rndCur = RGB8{
+        uint8_t(rndFrom.r + (rndTo.r - rndFrom.r) * f + 0.5f),
+        uint8_t(rndFrom.g + (rndTo.g - rndFrom.g) * f + 0.5f),
+        uint8_t(rndFrom.b + (rndTo.b - rndFrom.b) * f + 0.5f)};
+
+    struct tm t;
+    getNow(t);
+    bool bgChanged = (rndCur.r != lastRndBg.r || rndCur.g != lastRndBg.g || rndCur.b != lastRndBg.b);
+    if (!fullRedraw && !bgChanged && t.tm_sec == lastRndSec) return;
+
+    uint32_t bg24 = rgb888(rndCur), fg = contrastColor(rndCur);
+    if (fullRedraw || bgChanged) {
+        M5.Display.fillScreen(bg24);
+        lastRndBg = rndCur;
+        fullRedraw = false;
+    }
+    lastRndSec = t.tm_sec;
+
+    char buf[32];
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(fg, bg24);
+    M5.Display.setFont(&fonts::Font7);
+    M5.Display.setTextSize(1.4f);
+    snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    M5.Display.drawString(buf, CX, CY);
+
+    M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+    M5.Display.setTextSize(1);
+    snprintf(buf, sizeof(buf), "#%02X%02X%02X", rndCur.r, rndCur.g, rndCur.b);
+    M5.Display.drawString(buf, CX, CY + 85);
+    M5.Display.drawString("色ランダム", CX, CY + 130);
+}
+
+// ---------------------------------------------------------------------
 // モード5: ストップウォッチ
 // ---------------------------------------------------------------------
 static bool     swRunning = false;
@@ -1055,6 +1151,21 @@ static void updateLed()
     if (millis() - lastMs < 100) return;   // 10fpsで十分
     lastMs = millis();
 
+    uint8_t bright = ledOn ? ledLevel : 0;
+
+    // LEDランダム: 37個がそれぞれランダムな色できらめく
+    if (mode == MODE_RANDOM) {
+        for (int i = 0; i < HEX_N; ++i) hexLeds[i].nscale8(235);  // ゆっくり減光
+        if (bright) {
+            for (int k = 0; k < 2; ++k) {
+                hexLeds[random(HEX_N)] = CHSV(random(0, 256), 220, 255);
+            }
+        }
+        FastLED.setBrightness(bright);
+        FastLED.show();
+        return;
+    }
+
     RGB8 c = {6, 6, 10};   // 出番がないときはほのかな夜色
     if (mode == MODE_CLOCK && (clockSub == CS_SCRUB || clockSub == CS_LAPSE)) {
         c = lastPrevBg;                            // タイムトラベル/ラプス中の色
@@ -1070,18 +1181,8 @@ static void updateLed()
         if (voiceHasColor) c = voiceColor;
     }
 
-    static RGB8     lastC = {1, 2, 3};
-    static uint8_t  lastB = 255;
-    static uint32_t lastShow = 0;
-    uint8_t b = ledOn ? ledLevel : 0;
-    bool changed = !(c.r == lastC.r && c.g == lastC.g && c.b == lastC.b && b == lastB);
-    // 変化がなくても1秒ごとに再送信する。送信タイミングの乱れ(Wi-Fi割り込み等)で
-    // 化けた色を掴んだLEDがあっても、次の送信で正しい色に戻る。
-    if (!changed && millis() - lastShow < 1000) return;
-    lastC = c;
-    lastB = b;
-    lastShow = millis();
-    FastLED.setBrightness(b);
+    // 変化がなくても0.1秒ごとに送信し続ける (1個目のLEDの取りこぼし対策)
+    FastLED.setBrightness(bright);
     fill_solid(hexLeds, HEX_N, CRGB(c.r, c.g, c.b));
     FastLED.show();
 }
@@ -1101,7 +1202,6 @@ void setup()
 
     // スピーカー (ES8311 コーデック) / マイク
     spkOk = M5.Speaker.isEnabled();
-    if (spkOk) M5.Speaker.setVolume(110);
     speakerActive = spkOk;
     micOk = M5.Mic.isEnabled();
 
@@ -1112,8 +1212,33 @@ void setup()
     touchOk = M5.Touch.isEnabled();
 
     // Unit Hex (PortA / G10)
-    FastLED.addLeds<SK6812, HEX_PIN, GRB>(hexLeds, HEX_N);
+    // 電源投入直後はLED側の電源が安定するまでデータ線をLOWに固定しておく。
+    // (コールドスタート時、不安定な信号を受けた1個目のLEDが異常状態に
+    //  入ってしまい点灯しなくなる対策)
+    pinMode(HEX_PIN, OUTPUT);
+    digitalWrite(HEX_PIN, LOW);
+    delay(500);
+
+    // タイミングはWS2812B互換を使う (SK6812でも動作し、1個目のLEDの
+    // 取りこぼしが起きにくい)
+    FastLED.addLeds<WS2812B, HEX_PIN, GRB>(hexLeds, HEX_N);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);  // 電力保護 (5V/500mA)
+    // 信号の駆動力を最大へ: 3.3V信号の立ち上がりを鋭くして
+    // 1個目のLED(生の信号を受ける)の読み取りを安定させる
+    gpio_set_drive_capability((gpio_num_t)HEX_PIN, GPIO_DRIVE_CAP_3);
+    FastLED.clear(true);
+
+    // 起動時LEDテスト: 1個ずつ順番に白く点灯 → 全点灯(緑)
+    FastLED.setBrightness(60);
+    for (int i = 0; i < HEX_N; ++i) {
+        FastLED.clear();
+        hexLeds[i] = CRGB(255, 255, 255);
+        FastLED.show();
+        delay(40);
+    }
+    fill_solid(hexLeds, HEX_N, CRGB(0, 160, 0));
+    FastLED.show();
+    delay(800);
     FastLED.clear(true);
 
     // 設定を復元 (音のオン/オフ、LEDの明るさ)
@@ -1122,6 +1247,9 @@ void setup()
     ledLevel = prefs.getUChar("ledv", 96);
     if (ledLevel < 4) ledLevel = 4;
     ledOn = prefs.getBool("ledon", true);
+    sndVol = prefs.getUChar("vol", 110);
+    if (sndVol < 4) sndVol = 4;
+    if (spkOk) M5.Speaker.setVolume(sndVol);
 
     Serial.begin(115200);
     setupClock();
@@ -1177,15 +1305,24 @@ void loop()
         clockSub = CS_NORMAL;
         if (prev == MODE_VOICE) voiceExit();      // マイク→スピーカーへ戻す
         if (mode == MODE_TILT) tiltEnter();
+        if (mode == MODE_RANDOM) {                // ランダムの初期化
+            rndPickNext();
+            lastRndBg = {1, 1, 1};
+            lastRndSec = -1;
+        }
         if (mode == MODE_VOICE) voiceEnter();     // スピーカー→マイクへ (切替音なし)
         else soundModeSwitch();
     }
 
     switch (mode) {
     case MODE_CLOCK: {
-        // --- LEDの明るさ調整画面 ---
+        // --- LED明るさ / 音量の調整画面 ---
         if (clockSub == CS_LEDADJ) {
             ledAdjustLoop();
+            break;
+        }
+        if (clockSub == CS_VOLADJ) {
+            volAdjustLoop();
             break;
         }
         // --- タイムラプス (右長押しで開始、ボタンで中断) ---
@@ -1233,11 +1370,17 @@ void loop()
         }
         if (clockSub == CS_SCRUB) break;
 
-        if (btnR().wasClicked()) {                 // 右: 音のオン/オフ
+        if (btnR().wasSingleClicked()) {           // 右: 音のオン/オフ
             if (soundOn) { soundToggleOff(); soundOn = false; }
             else         { soundOn = true; soundToggleOn(); }
             prefs.putBool("sound", soundOn);
             lastClockSec = -1;  // 表示をすぐ更新
+        }
+        if (btnR().wasDoubleClicked()) {           // 右ダブル: 音量調整画面
+            clockSub = CS_VOLADJ;
+            ledAdjLastInput = millis();
+            ledAdjDirty = true;
+            fullRedraw = true;
         }
         if (btnL().wasSingleClicked()) {           // 左: LEDのオン/オフ
             ledOn = !ledOn;
@@ -1253,6 +1396,18 @@ void loop()
         drawClock();
         break;
     }
+
+    case MODE_RANDOM:
+        if (btnR().wasClicked()) {                 // 右: 今すぐ次の色へ
+            rndPickNext();
+            rndDurMs = 800;                        // すばやく移る
+        }
+        if (btnL().wasSingleClicked()) {           // 左: LEDのオン/オフ
+            ledOn = !ledOn;
+            prefs.putBool("ledon", ledOn);
+        }
+        drawRandomClock();
+        break;
 
     case MODE_MIXER:
         if (btnL().wasClicked()) {                 // 左: 色を選ぶ
