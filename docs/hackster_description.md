@@ -48,6 +48,18 @@ Switch to **Voice Color** mode and just talk: the microphone turns your voice in
 
 Using the built-in BMI270 IMU, **Tilt Paint** mode turns the whole screen into wet watercolor paper. Pick a paint pot for each button (left and right), then simply tilt the device: paint flows toward the low side and pools there — strong where it gathers, faint where it thins out. A per-frame diffusion pass makes neighboring colors bleed into each other exactly like wet-on-wet watercolor. While you tilt, high pentatonic notes twinkle randomly like stardust — the harder you tilt, the louder and faster they sparkle. A long press wipes the paper clean.
 
+### Fill the room — ambient light with Unit HEX
+
+Plug an M5Stack **Unit HEX** (37× SK6812 LEDs) into Port A and the panel becomes ambient light: all 37 LEDs mirror the "current color" of every mode — the sky color of the clock, the color you just mixed, the average of your watercolor painting, even your voice's color. LED on/off, fine brightness (2–100%) and speaker volume are all adjusted on-device with circular gauge screens, and every setting persists in flash. The unit is optional — the firmware runs perfectly without it.
+
+### Random mode
+
+A mode for letting go: the clock keeps ticking while the background drifts to a new random color every few seconds, and the HEX panel becomes a starfield of 37 independently twinkling random colors.
+
+### Always on time — Wi-Fi + NTP
+
+Set up Wi-Fi once from your phone (hold the right button at power-on; the device becomes an access point with a captive portal). From then on the clock syncs to internet time at every boot and daily at 3 AM, writes it to the battery-backed RTC, then switches Wi-Fi off to save power.
+
 ### Sounds of stars, sky and earth
 
 All feedback sounds are designed around a celestial theme: a star-twinkle for mode switching, a distant-bell arpeggio at the top of every hour, and a single low "earth" tone when muting. Sound can be toggled with one click and the setting persists in flash.
@@ -69,8 +81,9 @@ True to the device's name, a lap-capable 1/100s stopwatch is one button away.
 - **Watercolor sim:** 58×58 float grid; gravity-weighted paint deposit + diffusion at ~15 fps, rendered via a zoomed sprite
 - **Voice-to-color:** 16 kHz mic frames → RMS (loudness→brightness) + zero-crossing rate (pitch→hue), with automatic mic/speaker codec swapping
 - **Color-to-sound:** RGB → hue → 10-step pentatonic scale (C5–A6), played as note + octave sparkle
-- **Timekeeping:** battery-backed RTC; one-line PowerShell script syncs the clock from the PC over USB serial
-- Full source code, color table and build instructions are in the GitHub repository.
+- **Ambient light:** FastLED over Grove Port A (Unit HEX, SK6812×37), power-limited to 5 V / 500 mA, cold-boot-safe data line handling
+- **Timekeeping:** Wi-Fi NTP auto-sync (smartphone captive-portal setup, resync daily at 3 AM) + battery-backed RTC + serial/PowerShell fallback
+- Full source code, color table and build instructions: **https://github.com/aokko2000/iroirotokei**
 
 ### Why it matters
 
@@ -109,6 +122,18 @@ iroirotokei turns a utilitarian gadget into ambient art: you learn to *feel* wha
 
 内蔵IMU (BMI270) を使った「傾き絵の具」モードでは、画面全体が濡れた水彩紙になります。左右のボタンでそれぞれの絵の具つぼの色を選び、あとは本体を傾けるだけ。絵の具は低い側へ流れてそこに溜まります — 集まる場所は濃く、離れた場所は淡く。毎フレームの拡散処理で、隣りあう色が「にじみ」のようにじわっと混ざります。傾けている間は星屑のような高音のペンタトニックがランダムにまたたき、強く傾けるほど大きく・速く鳴ります。長押しで紙を真っさらに。
 
+### 部屋ごと染める — Unit HEXの環境光
+
+PortAにM5Stack **Unit HEX** (SK6812 LED×37) をつなぐと、六角形のパネルが環境光になります。37個のLEDが全モードの「いまの色」と連動 — 時計なら空の色、色づくりなら混ぜた色、傾き絵の具なら画面の平均色、声の色ならあなたの声の色。LEDのオン/オフ・明るさ (2〜100%)・スピーカー音量は本体の円形ゲージ画面で細かく調整でき、設定はすべて保存されます。Unitはオプションで、未接続でも全機能が動きます。
+
+### 色ランダムモード
+
+時計は秒まで動いたまま、背景色が数秒ごとにランダムな色へゆっくり漂いつづけるモード。HEXパネルは37個がバラバラにきらめく星空になります。
+
+### いつでも正確 — Wi-Fi + NTP
+
+Wi-Fi設定はスマホから一度だけ (右ボタンを押しながら電源オンでデバイスがアクセスポイントになり、設定画面が開きます)。以降は起動のたびと毎日3時にインターネット時刻へ自動同期し、電池バックアップ付きRTCにも書き込んで、同期後はWi-Fiを切って省電力に。
+
 ### 星・空・地球の音
 
 効果音はすべて天体をテーマにデザインしました。モード切替は星のまたたき、毎正時は遠くの鐘のようなアルペジオ、消音時は大地を思わせる低い一音。音はワンクリックでオン/オフでき、設定はフラッシュに保存されます。
@@ -130,8 +155,9 @@ PortAにM5Stackの**Unit Hex** (SK6812×37) をつなぐと、六角形のLEDパ
 - **水彩シミュレーション:** 58×58の浮動小数点格子。重力方向に重み付けした流し込み+にじみ拡散を約15fpsで計算し、スプライト拡大描画
 - **声→色:** 16kHzのマイクフレームからRMS (大きさ→明るさ) とゼロ交差率 (高さ→色相) を算出。マイク/スピーカーはコーデック共有のため自動交代
 - **色→音:** RGB → 色相 → 10段階ペンタトニック音階 (C5–A6)、基音+オクターブのきらめき
-- **時刻:** 電池バックアップ付きRTC。PowerShellスクリプト1行でPCの時計とUSBシリアル同期
-- ソースコード・カラーテーブル・ビルド手順はGitHubリポジトリに全公開。
+- **環境光:** Grove PortA経由のFastLED制御 (Unit HEX / SK6812×37)。5V/500mAの電力制限、コールドスタート対策済み
+- **時刻:** Wi-Fi NTP自動同期 (スマホから設定、毎日3時に再同期) + 電池バックアップ付きRTC + シリアル/PowerShellの手動手段も併備
+- ソースコード・カラーテーブル・ビルド手順は **https://github.com/aokko2000/iroirotokei** に全公開。
 
 ### この作品の意味
 
@@ -150,4 +176,5 @@ PortAにM5Stackの**Unit Hex** (SK6812×37) をつなぐと、六角形のLEDパ
 - 締切: 2026年8月7日 23:59 (PST)
 - 手順: ① Hackster.io にプロジェクト公開 (この説明文+写真/動画+GitHubリポジトリ) → ② 公式Googleフォームで応募
 - 動画デモ推奨: 「朝焼け→昼への変化 (時刻を5:20に設定して10分早回し)」「色づくりで混ぜて音が変わる様子」「毎正時の鐘」を撮ると審査基準 (創造性/完成度/見せ方/インパクト) に効きます
-- GitHubリポジトリを作って `platformio.ini` / `src/` / `README.md` / `docs/images/` を push しておくこと
+- GitHubリポジトリ: https://github.com/aokko2000/iroirotokei (公開済み・最新)
+- 動画の追加おすすめ: 「傾き絵の具で傾けて混ぜる」「声の色で歌う」「Unit HEXが空の色で光る様子」「色ランダムの星空きらめき」
