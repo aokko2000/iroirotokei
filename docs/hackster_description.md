@@ -64,10 +64,6 @@ Set up Wi-Fi once from your phone (hold the right button at power-on; the device
 
 All feedback sounds are designed around a celestial theme: a star-twinkle for mode switching, a distant-bell arpeggio at the top of every hour, and a single low "earth" tone when muting. Sound can be toggled with one click and the setting persists in flash.
 
-### Light up the room — Unit Hex
-
-Plug an M5Stack **Unit Hex** (37× SK6812 NeoPixels) into Port A and the hexagonal panel glows with "the current color" of whatever mode you are in: the sky color of the clock (including time travel and day replay), your mixed color, the average of your tilted watercolor, or the color of your voice. The clock stops being a screen and becomes ambient light for the whole desk. Brightness has five steps (including off) and the setting persists; FastLED's power limiter caps the draw at 5 V / 500 mA.
-
 ### And it is still a stopwatch
 
 True to the device's name, a lap-capable 1/100s stopwatch is one button away.
@@ -84,6 +80,13 @@ True to the device's name, a lap-capable 1/100s stopwatch is one button away.
 - **Ambient light:** FastLED over Grove Port A (Unit HEX, SK6812×37), power-limited to 5 V / 500 mA, cold-boot-safe data line handling
 - **Timekeeping:** Wi-Fi NTP auto-sync (smartphone captive-portal setup, resync daily at 3 AM) + battery-backed RTC + serial/PowerShell fallback
 - Full source code, color table and build instructions: **https://github.com/aokko2000/iroirotokei**
+
+### Build steps
+
+1. Flash the firmware: open the repo with VSCode + PlatformIO, hold the power button to enter download mode, and hit Upload — all libraries are fetched automatically.
+2. Plug the Unit HEX into Port A (optional).
+3. Set up Wi-Fi once from your phone (hold the right button at power-on) — the clock syncs itself from then on.
+4. The 3D-printed desk stand holds the StopWatch upright with the Unit HEX embedded below, so the panel glows through from under the clock.
 
 ### Why it matters
 
@@ -138,10 +141,6 @@ Wi-Fi設定はスマホから一度だけ (右ボタンを押しながら電源�
 
 効果音はすべて天体をテーマにデザインしました。モード切替は星のまたたき、毎正時は遠くの鐘のようなアルペジオ、消音時は大地を思わせる低い一音。音はワンクリックでオン/オフでき、設定はフラッシュに保存されます。
 
-### 部屋ごと照らす — Unit Hex
-
-PortAにM5Stackの**Unit Hex** (SK6812×37) をつなぐと、六角形のLEDパネルが「いまのモードの色」で光ります。時計の空の色 (タイムトラベルや1日再生中はその色)、混ぜた色、傾けた水彩の平均色、声の色 — 画面の中の色が机の上の環境光になります。明るさは5段階 (OFF含む) で設定は保存。FastLEDの電力制限で5V/500mAに抑えています。
-
 ### ストップウォッチも健在
 
 デバイス名に恥じない、ラップ機能付き1/100秒ストップウォッチもボタンひとつで使えます。
@@ -159,6 +158,13 @@ PortAにM5Stackの**Unit Hex** (SK6812×37) をつなぐと、六角形のLEDパ
 - **時刻:** Wi-Fi NTP自動同期 (スマホから設定、毎日3時に再同期) + 電池バックアップ付きRTC + シリアル/PowerShellの手動手段も併備
 - ソースコード・カラーテーブル・ビルド手順は **https://github.com/aokko2000/iroirotokei** に全公開。
 
+### つくりかた
+
+1. ファームウェア書き込み: リポジトリをVSCode+PlatformIOで開き、電源ボタン長押しでダウンロードモードにしてUpload (ライブラリは自動取得)
+2. Unit HEXをPortAに接続 (オプション)
+3. Wi-Fi設定をスマホから一度だけ (右ボタンを押しながら電源オン) — 以降は時刻が自動で合う
+4. 3Dプリント製の卓上スタンドにStopWatchを立て、下部にUnit HEXを組み込み — 時計の足元からパネルの光がにじむ構成
+
 ### この作品の意味
 
 色時計は実用ガジェットをアンビエントアートに変えます。使ううちに「朝6時の色」を体で覚えていきます。色づくりモードは子ども向けの色彩教育おもちゃにもなります — 混色、色相、明度、さらには共感覚 (ティール色はどんな音?) まで、手のひらの上で。
@@ -169,7 +175,8 @@ PortAにM5Stackの**Unit Hex** (SK6812×37) をつなぐと、六角形のLEDパ
 
 - M5Stack StopWatch × 1
 - M5Stack Unit Hex (SK6812×37) × 1 — オプション、PortAに接続
-- USB Type-C cable × 1 (書き込み・時刻同期用)
+- 3Dプリント製 卓上スタンド (自作、Unit Hex組み込み) × 1
+- USB Type-C cable × 1 (書き込み用)
 
 ## 応募メモ
 
