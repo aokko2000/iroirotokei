@@ -48,6 +48,9 @@ PortA に [Unit Hex](https://docs.m5stack.com/ja/unit/hex) (SK6812×37) を接�
 | 傾き絵の具 | 画面全体の平均色 (混ざり具合がそのまま) |
 | 声の色 | 声の色 |
 
+3Dプリント製スタンド (StopWatchを立てて下部にUnit Hexを組み込むホルダー) のSTLは
+[hardware/iroiro.stl](hardware/iroiro.stl)、接続図は [docs/images/schematic_unit_hex.png](docs/images/schematic_unit_hex.png) にあります。
+
 時計画面で**左ボタン短押し=LEDのオン/オフ**、**左ボタンダブルクリック=明るさ調整画面**。
 調整画面では左ボタンで暗く・右ボタンで明るく (押しっぱなしで連続変化、2〜100%)、
 3秒そのままにすると決定して時計に戻ります。どちらの設定も保存されます。
