@@ -8,6 +8,7 @@
 //   左ボタン(KEYA/黄) 長押し ... モード切替 (色時計→色づくり→ストップウォッチ)
 //   [色時計]    左短押し: LEDのオン/オフ
 //               左ダブルクリック: LED明るさ調整画面 (左:暗く 右:明るく、3秒放置で決定)
+//               画面中央をタップ: バッテリー表示のオン/オフ (既定オフ)
 //               右短押し: 音のオン/オフ
 //               右ダブルクリック: 音量調整画面 (設定はすべて保存される)
 //   [月時計]    今夜の月 (正確な形・月齢・名前)、月食の予告と進行演出、
@@ -463,6 +464,7 @@ static const char *WDAY_JP[] = {"日", "月", "火", "水", "木", "金", "土"}
 enum ClockSub : uint8_t { CS_NORMAL, CS_SCRUB, CS_LAPSE, CS_LEDADJ, CS_VOLADJ };
 static ClockSub clockSub      = CS_NORMAL;
 static bool     touchOk       = false;
+static bool     battShow      = false;   // バッテリー表示 (中央タップで切替、既定オフ)
 static uint32_t lapseStartMs  = 0;
 static uint32_t lapseBaseSec  = 0;
 static int      prevHourNote  = -1;
@@ -662,7 +664,7 @@ static void drawClock()
         battCache = M5.Power.getBatteryLevel();
         chgCache  = (M5.Power.isCharging() == m5::Power_Class::is_charging);
     }
-    if (battCache >= 0) {
+    if (battShow && battCache >= 0) {
         M5.Display.fillRect(CX - 75, 72, 150, 26, bg24);
         int bx = CX - 52, by = 78;
         M5.Display.drawRect(bx, by, 32, 16, fg);
@@ -1592,6 +1594,7 @@ void setup()
     ledLevel = prefs.getUChar("ledv", 96);
     if (ledLevel < 4) ledLevel = 4;
     ledOn = prefs.getBool("ledon", true);
+    battShow = prefs.getBool("batt", false);
     sndVol = prefs.getUChar("vol", 110);
     if (sndVol < 4) sndVol = 4;
     if (spkOk) M5.Speaker.setVolume(sndVol);
@@ -1710,9 +1713,17 @@ void loop()
             break;
         }
 
-        // --- タイムトラベル (タッチで文字盤をなぞる) ---
+        // --- タイムトラベル (タッチで文字盤をなぞる) / 中央タップ: バッテリー表示 ---
         if (touchOk) {
             auto t = M5.Touch.getDetail();
+            {
+                float dx = t.x - CX, dy = t.y - CY;
+                if (t.wasClicked() && clockSub == CS_NORMAL && dx * dx + dy * dy <= 60 * 60) {
+                    battShow = !battShow;          // 中央タップ: バッテリー表示切替
+                    prefs.putBool("batt", battShow);
+                    clockResetDraw();
+                }
+            }
             if (t.isPressed()) {
                 float dx = t.x - CX, dy = t.y - CY;
                 if (clockSub == CS_NORMAL && dx * dx + dy * dy > 60 * 60) {
