@@ -10,6 +10,8 @@
 //               左ダブルクリック: LED明るさ調整画面 (左:暗く 右:明るく、3秒放置で決定)
 //               右短押し: 音のオン/オフ
 //               右ダブルクリック: 音量調整画面 (設定はすべて保存される)
+//   [月時計]    今夜の月 (正確な形・月齢・名前)、月食の予告と進行演出、
+//               流星群の極大夜には流れ星。右短押し: 今後の予定表示
 //   [色ランダム] 時計は動いたまま、背景色がランダムに漂う。LEDもランダムにきらめく
 //               右短押し: 今すぐ次の色へ / 左短押し: LEDのオン/オフ
 //               右長押し: 1日の色を約48秒で再生 (タイムラプス)
@@ -55,7 +57,7 @@ static constexpr int R  = 233;
 // ---------------------------------------------------------------------
 // モード
 // ---------------------------------------------------------------------
-enum Mode : uint8_t { MODE_CLOCK, MODE_RANDOM, MODE_MIXER, MODE_TILT, MODE_VOICE, MODE_STOPWATCH, MODE_COUNT };
+enum Mode : uint8_t { MODE_CLOCK, MODE_MOON, MODE_RANDOM, MODE_MIXER, MODE_TILT, MODE_VOICE, MODE_STOPWATCH, MODE_COUNT };
 static Mode mode = MODE_CLOCK;
 static bool fullRedraw = true;
 
@@ -1081,6 +1083,294 @@ static void drawRandomClock()
 }
 
 // ---------------------------------------------------------------------
+// モード: 月時計 (月齢・月食・流星群)
+// ---------------------------------------------------------------------
+static int      lastMoonMin     = -1;
+static bool     moonPage2       = false;
+static uint32_t moonStreakUntil = 0;
+static uint32_t moonNextStreak  = 0;
+
+// 月の位相角 0°=新月 180°=満月 (Meeus簡易式、誤差は数時間程度)
+static float moonPhaseDeg()
+{
+    double jd = time(nullptr) / 86400.0 + 2440587.5;   // UTC→ユリウス日
+    double T  = (jd - 2451545.0) / 36525.0;
+    double Mp = fmod(134.963 + 477198.8676 * T, 360.0) * 0.0174533;
+    double M  = fmod(357.529 + 35999.0503  * T, 360.0) * 0.0174533;
+    double lm = fmod(218.316 + 481267.8813 * T, 360.0) + 6.289 * sin(Mp);
+    double ls = fmod(280.459 + 36000.7698  * T, 360.0) + 1.915 * sin(M);
+    double d  = fmod(lm - ls, 360.0);
+    if (d < 0) d += 360.0;
+    return (float)d;
+}
+
+static const char *moonName(float age)
+{
+    if (age < 1.5f)  return "新月";
+    if (age < 5.5f)  return "三日月";
+    if (age < 9.0f)  return "上弦の月";
+    if (age < 13.0f) return "十三夜";
+    if (age < 16.2f) return "満月";
+    if (age < 20.0f) return "十六夜";
+    if (age < 24.0f) return "下弦の月";
+    if (age < 28.0f) return "二十六夜";
+    return "新月";
+}
+
+// --- 月食テーブル (日本で見られるもの、JSTの食の最大時刻) ---
+// 2026-03-03 は国立天文台の公表値 (欠け始め18:50 皆既20:04-21:03 最大20:33 終了22:18)。
+// それ以降は概略値。年が近づいたら国立天文台の暦で要確認。
+struct EclipseEv { int16_t y; int8_t mo, d, hh, mm; bool total; };
+static const EclipseEv ECLIPSES[] = {
+    {2026,  3,  3, 20, 33, true },
+    {2028,  7,  7,  3, 20, false},
+    {2029,  1,  1,  1, 52, true },
+    {2030,  6, 16,  3, 33, false},
+    {2032,  4, 26,  0, 13, true },
+    {2032, 10, 19, 19,  2, true },
+};
+
+static time_t eclipseEpoch(const EclipseEv &e)
+{
+    struct tm t = {};
+    t.tm_year = e.y - 1900;
+    t.tm_mon  = e.mo - 1;
+    t.tm_mday = e.d;
+    t.tm_hour = e.hh;
+    t.tm_min  = e.mm;
+    return mktime(&t);
+}
+
+// 次の月食 (終了済みはスキップ)。diffSec = 食の最大までの秒 (負=最大は過ぎた)
+static const EclipseEv *nextEclipse(long *diffSec)
+{
+    time_t now = time(nullptr);
+    for (const auto &e : ECLIPSES) {
+        long d = (long)(eclipseEpoch(e) - now);
+        if (d > -4 * 3600) {
+            if (diffSec) *diffSec = d;
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+// いま月食の最中か: 0=なし 1=部分食 2=皆既中 (最大±30分≒皆既、±105分≒部分食)
+static int eclipseNow()
+{
+    long d;
+    const EclipseEv *e = nextEclipse(&d);
+    if (!e) return 0;
+    long a = labs(d);
+    if (e->total && a <= 30 * 60) return 2;
+    if (a <= 105 * 60) return 1;
+    return 0;
+}
+
+// --- 流星群テーブル (毎年の極大日, span=前後この日数は「活動中」) ---
+struct MeteorEv { int8_t mo, d; const char *name; uint8_t zhr; int8_t span; };
+static const MeteorEv METEORS[] = {
+    { 1,  4, "しぶんぎ座流星群",   110, 2},
+    { 4, 22, "4月こと座流星群",     18, 2},
+    { 5,  6, "みずがめ座η流星群",   50, 3},
+    { 7, 30, "みずがめ座δ流星群",   25, 3},
+    { 8, 13, "ペルセウス座流星群",  100, 4},
+    {10, 21, "オリオン座流星群",    20, 3},
+    {11, 17, "しし座流星群",        15, 2},
+    {12, 14, "ふたご座流星群",     150, 3},
+    {12, 22, "こぐま座流星群",      10, 2},
+};
+
+static int meteorDiffDays(const MeteorEv &m, const struct tm &t)
+{
+    struct tm p = t;
+    p.tm_mon  = m.mo - 1;
+    p.tm_mday = m.d;
+    p.tm_hour = 12; p.tm_min = 0; p.tm_sec = 0;
+    mktime(&p);
+    int diff = p.tm_yday - t.tm_yday;
+    if (diff > 182)  diff -= 365;
+    if (diff < -182) diff += 365;
+    return diff;
+}
+
+// 活動中の流星群 (daysToPeak: 0=今夜極大, 負=極大は過ぎたがまだ活動中)
+static const MeteorEv *meteorActive(int *daysToPeak)
+{
+    struct tm t;
+    getNow(t);
+    for (const auto &m : METEORS) {
+        int diff = meteorDiffDays(m, t);
+        if (abs(diff) <= m.span) {
+            if (daysToPeak) *daysToPeak = diff;
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
+// 次に極大を迎える流星群
+static const MeteorEv *meteorNext(int *days)
+{
+    struct tm t;
+    getNow(t);
+    int best = 999;
+    const MeteorEv *bev = nullptr;
+    for (const auto &m : METEORS) {
+        int diff = meteorDiffDays(m, t);
+        if (diff < 0) diff += 365;
+        if (diff < best) { best = diff; bev = &m; }
+    }
+    if (days) *days = best;
+    return bev;
+}
+
+// 月を描く (欠け際まで正確な形。皆既中は赤銅色)
+static void drawMoonDisk(int cx, int cy, int R, float d, int ecl)
+{
+    uint32_t lit  = (ecl == 2) ? 0xBE4628u : 0xF5F0DEu;
+    uint32_t dark = 0x1C1E2Eu;
+    float c = cosf(d * 0.0174533f);
+    for (int y = -R; y <= R; ++y) {
+        int w = (int)sqrtf((float)(R * R - y * y));
+        if (w <= 0) continue;
+        M5.Display.drawFastHLine(cx - w, cy + y, 2 * w + 1, dark);
+        int x0, x1;
+        if (d <= 180.f) { x0 = (int)(w * c);  x1 = w; }          // 満ちていく: 右から光る
+        else            { x0 = -w;            x1 = (int)(-w * c); } // 欠けていく: 左が残る
+        if (x1 > x0) M5.Display.drawFastHLine(cx + x0, cy + y, x1 - x0 + 1, lit);
+    }
+}
+
+static void drawMoon()
+{
+    struct tm t;
+    getNow(t);
+    int nowMin = t.tm_hour * 60 + t.tm_min;
+    if (!fullRedraw && nowMin == lastMoonMin) return;
+    lastMoonMin = nowMin;
+    fullRedraw = false;
+
+    float d   = moonPhaseDeg();
+    float age = d / 360.f * 29.5306f;
+    float k   = (1 - cosf(d * 0.0174533f)) / 2;   // 輝面比
+    int   ecl = eclipseNow();
+
+    // 夜空と星
+    M5.Display.fillScreen(0x050612u);
+    uint32_t s = 20260303;
+    for (int i = 0; i < 130; ++i) {
+        s = s * 1664525u + 1013904223u;
+        int x = 20 + (s >> 8) % 426;
+        int y = 20 + (s >> 18) % 300;
+        int ddx = x - CX, ddy = y - (CY - 45);
+        if (ddx * ddx + ddy * ddy < 115 * 115) continue;   // 月にかぶる星は消す
+        uint8_t b = 90 + (s % 140);
+        M5.Display.drawPixel(x, y, M5.Display.color888(b, b, b));
+    }
+
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+    M5.Display.setTextColor(0x808098u, 0x050612u);
+    M5.Display.drawString("月時計", CX, 44);
+
+    char buf[64];
+    if (!moonPage2) {
+        drawMoonDisk(CX, CY - 45, 100, d, ecl);
+
+        M5.Display.setFont(&fonts::lgfxJapanGothic_28);
+        M5.Display.setTextColor(0xF2F4FFu, 0x050612u);
+        snprintf(buf, sizeof(buf), "月齢 %.1f  %s", age, moonName(age));
+        M5.Display.drawString(buf, CX, 318);
+
+        M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+        M5.Display.setTextColor(0xA9B4D6u, 0x050612u);
+        int toFull = (int)(fmodf(180.f - d + 360.f, 360.f) / 12.19f + 0.5f);
+        int toNew  = (int)(fmodf(360.f - d, 360.f) / 12.19f + 0.5f);
+        if (toFull == 0 || age >= 13.0f && age < 16.2f)
+            snprintf(buf, sizeof(buf), "輝面比 %d%%  新月まで %d日", (int)(k * 100 + 0.5f), toNew);
+        else
+            snprintf(buf, sizeof(buf), "輝面比 %d%%  満月まで %d日", (int)(k * 100 + 0.5f), toFull);
+        M5.Display.drawString(buf, CX, 354);
+
+        // イベント行: 月食 > 流星群
+        M5.Display.setTextColor(0xF9C46Bu, 0x050612u);
+        long diff;
+        const EclipseEv *e = nextEclipse(&diff);
+        int days;
+        const MeteorEv *m = meteorActive(&days);
+        if (ecl == 2)      M5.Display.drawString("皆既月食 進行中!", CX, 394);
+        else if (ecl == 1) M5.Display.drawString("月食 進行中", CX, 394);
+        else if (e && diff < 30L * 86400) {
+            snprintf(buf, sizeof(buf), "%d/%d %s (最大%d:%02d)",
+                     e->mo, e->d, e->total ? "皆既月食" : "部分月食", e->hh, e->mm);
+            M5.Display.drawString(buf, CX, 394);
+        } else if (m) {
+            const char *cond = k < 0.25f ? "◎" : (k < 0.6f ? "○" : "△");
+            if (days == 0) snprintf(buf, sizeof(buf), "今夜 %s 極大 %s", m->name, cond);
+            else           snprintf(buf, sizeof(buf), "%s 活動中 %s", m->name, cond);
+            M5.Display.drawString(buf, CX, 394);
+        }
+    } else {
+        // ページ2: これからの夜空
+        M5.Display.setFont(&fonts::lgfxJapanGothic_28);
+        M5.Display.setTextColor(0xF2F4FFu, 0x050612u);
+        M5.Display.drawString("これからの夜空", CX, 110);
+
+        M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+        long diff;
+        const EclipseEv *e = nextEclipse(&diff);
+        if (e) {
+            M5.Display.setTextColor(0xF9C46Bu, 0x050612u);
+            snprintf(buf, sizeof(buf), "次の月食: %d/%d/%d", e->y, e->mo, e->d);
+            M5.Display.drawString(buf, CX, 170);
+            snprintf(buf, sizeof(buf), "%s (最大 %d:%02d)", e->total ? "皆既月食" : "部分月食", e->hh, e->mm);
+            M5.Display.drawString(buf, CX, 204);
+        }
+        int days;
+        const MeteorEv *m = meteorNext(&days);
+        if (m) {
+            M5.Display.setTextColor(0xF2F4FFu, 0x050612u);
+            snprintf(buf, sizeof(buf), "次の流星群: %d/%d 極大", m->mo, m->d);
+            M5.Display.drawString(buf, CX, 264);
+            snprintf(buf, sizeof(buf), "%s (%d個/時)", m->name, m->zhr);
+            M5.Display.drawString(buf, CX, 298);
+        }
+        int toFull2 = (int)(fmodf(180.f - moonPhaseDeg() + 360.f, 360.f) / 12.19f + 0.5f);
+        M5.Display.setTextColor(0xA9B4D6u, 0x050612u);
+        snprintf(buf, sizeof(buf), "次の満月まで %d日", toFull2);
+        M5.Display.drawString(buf, CX, 358);
+        M5.Display.drawString("右ボタンで戻る", CX, 400);
+    }
+}
+
+// 流星群の極大夜: ときどき流れ星を流す
+static void moonStreaks()
+{
+    if (moonPage2) return;
+    struct tm t;
+    getNow(t);
+    int days;
+    const MeteorEv *m = meteorActive(&days);
+    bool night = (t.tm_hour >= 19 || t.tm_hour <= 3);
+    uint32_t now = millis();
+
+    if (m && days == 0 && night && now > moonNextStreak) {
+        moonNextStreak = now + 4000 + random(0, 5000);
+        int x = 70 + random(0, 320), y = 55 + random(0, 60);
+        int dx = 45 + random(0, 60), dy = 15 + random(0, 25);
+        for (int i = 0; i < 2; ++i)
+            M5.Display.drawLine(x + i, y + i, x + dx + i, y + dy + i, 0xFFFFFFu);
+        moonStreakUntil = now + 450;
+    }
+    if (moonStreakUntil && now > moonStreakUntil) {
+        moonStreakUntil = 0;
+        lastMoonMin = -1;   // 次のdrawMoonで軌跡を消す
+        fullRedraw = true;
+    }
+}
+
+// ---------------------------------------------------------------------
 // モード5: ストップウォッチ
 // ---------------------------------------------------------------------
 static bool     swRunning = false;
@@ -1152,6 +1442,27 @@ static void updateLed()
     lastMs = millis();
 
     uint8_t bright = ledOn ? ledLevel : 0;
+
+    // 月時計: LEDは今夜の月光 (明るさ=輝面比、皆既中は赤銅色、極大夜は流れ星)
+    if (mode == MODE_MOON) {
+        float d = moonPhaseDeg();
+        float k = (1 - cosf(d * 0.0174533f)) / 2;
+        RGB8 c;
+        if (eclipseNow() == 2) {
+            c = RGB8{150, 45, 25};
+        } else {
+            float s2 = 0.10f + 0.90f * k;
+            c = RGB8{uint8_t(200 * s2), uint8_t(206 * s2), uint8_t(226 * s2)};
+        }
+        FastLED.setBrightness(bright);
+        fill_solid(hexLeds, HEX_N, CRGB(c.r, c.g, c.b));
+        int mdays;
+        if (bright && meteorActive(&mdays) && mdays == 0 && random(0, 30) == 0) {
+            hexLeds[random(HEX_N)] = CRGB(255, 255, 255);   // 流れ星のきらめき
+        }
+        FastLED.show();
+        return;
+    }
 
     // LEDランダム: 37個がそれぞれランダムな色できらめく
     if (mode == MODE_RANDOM) {
@@ -1310,6 +1621,10 @@ void loop()
             lastRndBg = {1, 1, 1};
             lastRndSec = -1;
         }
+        if (mode == MODE_MOON) {                  // 月時計の初期化
+            lastMoonMin = -1;
+            moonPage2 = false;
+        }
         if (mode == MODE_VOICE) voiceEnter();     // スピーカー→マイクへ (切替音なし)
         else soundModeSwitch();
     }
@@ -1396,6 +1711,19 @@ void loop()
         drawClock();
         break;
     }
+
+    case MODE_MOON:
+        if (btnR().wasClicked()) {                 // 右: 今夜の月 ⇔ これからの夜空
+            moonPage2 = !moonPage2;
+            fullRedraw = true;
+        }
+        if (btnL().wasSingleClicked()) {           // 左: LEDのオン/オフ
+            ledOn = !ledOn;
+            prefs.putBool("ledon", ledOn);
+        }
+        drawMoon();
+        moonStreaks();
+        break;
 
     case MODE_RANDOM:
         if (btnR().wasClicked()) {                 // 右: 今すぐ次の色へ
