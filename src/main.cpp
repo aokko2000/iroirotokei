@@ -228,6 +228,9 @@ static uint8_t  ledLevel = 96;    // 明るさ 4〜255 (NVSから復元)
 static bool     ledOn    = true;  // オン/オフ (NVSから復元)
 static uint32_t ledAdjLastInput = 0;
 static bool     ledAdjDirty     = true;
+// 調整画面のオーバーレイ (0=なし 1=LED明るさ 2=音量)。
+// 時計/月時計/色ランダム/声の色ではどこからでも開ける。
+static uint8_t  adjOverlay      = 0;
 
 // ---------------------------------------------------------------------
 // 時刻管理 (RTC があれば RTC、無ければ内部クロック)
@@ -565,11 +568,10 @@ static void ledAdjustLoop()
     }
     drawAdjustGauge("LEDの明るさ", ledLevel, 0xF9C46Bu);
 
-    if (millis() - ledAdjLastInput > 3000) {   // 決定して時計へ戻る
+    if (millis() - ledAdjLastInput > 3000) {   // 決定して元の画面へ戻る
         prefs.putUChar("ledv", ledLevel);
         prefs.putBool("ledon", true);
-        clockSub = CS_NORMAL;
-        clockResetDraw();
+        adjOverlay = 0;
     }
 }
 
@@ -588,11 +590,19 @@ static void volAdjustLoop()
     }
     drawAdjustGauge("音量", sndVol, 0xFF6350u);
 
-    if (millis() - ledAdjLastInput > 3000) {   // 決定して時計へ戻る
+    if (millis() - ledAdjLastInput > 3000) {   // 決定して元の画面へ戻る
         prefs.putUChar("vol", sndVol);
-        clockSub = CS_NORMAL;
-        clockResetDraw();
+        adjOverlay = 0;
     }
+}
+
+// 調整画面を開く (1=LED明るさ 2=音量)
+static void openAdjust(uint8_t which)
+{
+    adjOverlay = which;
+    ledAdjLastInput = millis();
+    ledAdjDirty = true;
+    fullRedraw = true;
 }
 
 static void drawClock()
@@ -642,6 +652,30 @@ static void drawClock()
     snprintf(buf, sizeof(buf), "#%02X%02X%02X", bg.r, bg.g, bg.b);
     M5.Display.drawString(buf, CX, CY + 85);
     M5.Display.drawString("iroirotokei", CX, CY + 130);
+
+    // バッテリー残量 (上部。20%以下=赤、充電中=緑)
+    static uint32_t lastBattMs = 0;
+    static int  battCache = -1;
+    static bool chgCache  = false;
+    if (lastBattMs == 0 || millis() - lastBattMs > 5000) {
+        lastBattMs = millis();
+        battCache = M5.Power.getBatteryLevel();
+        chgCache  = (M5.Power.isCharging() == m5::Power_Class::is_charging);
+    }
+    if (battCache >= 0) {
+        M5.Display.fillRect(CX - 75, 72, 150, 26, bg24);
+        int bx = CX - 52, by = 78;
+        M5.Display.drawRect(bx, by, 32, 16, fg);
+        M5.Display.fillRect(bx + 32, by + 4, 4, 8, fg);
+        uint32_t fc = (battCache <= 20) ? 0xFF5040u : (chgCache ? 0x30C878u : fg);
+        M5.Display.fillRect(bx + 2, by + 2, (28 * battCache) / 100, 12, fc);
+        M5.Display.setTextDatum(middle_left);
+        M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+        M5.Display.setTextColor(fg, bg24);
+        snprintf(buf, sizeof(buf), "%d%%", battCache);
+        M5.Display.drawString(buf, bx + 44, by + 8);
+        M5.Display.setTextDatum(middle_center);
+    }
 
     // 音とLEDの状態 (右短押し: 音 / 左短押し: LEDオンオフ / 左ダブル: 明るさ)
     char stat[32];
@@ -1605,8 +1639,30 @@ void loop()
         else if (key != lastChimeKey) { lastChimeKey = key; soundHourChime(); }
     }
 
-    // 左長押し: モード切替 (LED調整画面中は「暗く」の連続押しに使うため除外)
-    if (!(mode == MODE_CLOCK && clockSub == CS_LEDADJ) && btnL().wasHold()) {
+    // 調整画面 (LED明るさ/音量) はどのモードの上にも重なって表示される
+    static uint8_t prevOverlay = 0;
+    if (adjOverlay) {
+        if (adjOverlay == 1) ledAdjustLoop();
+        else                 volAdjustLoop();
+        prevOverlay = adjOverlay;
+        delay(10);
+        return;
+    }
+    if (prevOverlay) {                        // 調整画面から戻った直後: 再描画
+        prevOverlay = 0;
+        fullRedraw = true;
+        mixerDirty = true;
+        lastClockSec = -1;
+        lastBg = {1, 1, 1};
+        lastRingMin = -1;
+        lastMoonMin = -1;
+        lastRndBg = {1, 1, 1};
+        lastRndSec = -1;
+        lastSwDrawn = UINT32_MAX;
+    }
+
+    // 左長押し: モード切替 (調整画面中は「下げる」の連続押しに使うため除外)
+    if (btnL().wasHold()) {
         Mode prev = mode;
         mode = Mode((mode + 1) % MODE_COUNT);
         fullRedraw = true;
@@ -1631,15 +1687,6 @@ void loop()
 
     switch (mode) {
     case MODE_CLOCK: {
-        // --- LED明るさ / 音量の調整画面 ---
-        if (clockSub == CS_LEDADJ) {
-            ledAdjustLoop();
-            break;
-        }
-        if (clockSub == CS_VOLADJ) {
-            volAdjustLoop();
-            break;
-        }
         // --- タイムラプス (右長押しで開始、ボタンで中断) ---
         if (clockSub == CS_NORMAL && btnR().wasHold()) {
             clockSub = CS_LAPSE;
@@ -1692,10 +1739,7 @@ void loop()
             lastClockSec = -1;  // 表示をすぐ更新
         }
         if (btnR().wasDoubleClicked()) {           // 右ダブル: 音量調整画面
-            clockSub = CS_VOLADJ;
-            ledAdjLastInput = millis();
-            ledAdjDirty = true;
-            fullRedraw = true;
+            openAdjust(2);
         }
         if (btnL().wasSingleClicked()) {           // 左: LEDのオン/オフ
             ledOn = !ledOn;
@@ -1703,17 +1747,14 @@ void loop()
             lastClockSec = -1;
         }
         if (btnL().wasDoubleClicked()) {           // 左ダブル: LEDの明るさ調整画面
-            clockSub = CS_LEDADJ;
-            ledAdjLastInput = millis();
-            ledAdjDirty = true;
-            fullRedraw = true;
+            openAdjust(1);
         }
         drawClock();
         break;
     }
 
     case MODE_MOON:
-        if (btnR().wasClicked()) {                 // 右: 今夜の月 ⇔ これからの夜空
+        if (btnR().wasSingleClicked()) {           // 右: 今夜の月 ⇔ これからの夜空
             moonPage2 = !moonPage2;
             fullRedraw = true;
         }
@@ -1721,12 +1762,14 @@ void loop()
             ledOn = !ledOn;
             prefs.putBool("ledon", ledOn);
         }
+        if (btnL().wasDoubleClicked()) openAdjust(1);   // 左ダブル: LED明るさ
+        if (btnR().wasDoubleClicked()) openAdjust(2);   // 右ダブル: 音量
         drawMoon();
         moonStreaks();
         break;
 
     case MODE_RANDOM:
-        if (btnR().wasClicked()) {                 // 右: 今すぐ次の色へ
+        if (btnR().wasSingleClicked()) {           // 右: 今すぐ次の色へ
             rndPickNext();
             rndDurMs = 800;                        // すばやく移る
         }
@@ -1734,6 +1777,8 @@ void loop()
             ledOn = !ledOn;
             prefs.putBool("ledon", ledOn);
         }
+        if (btnL().wasDoubleClicked()) openAdjust(1);   // 左ダブル: LED明るさ
+        if (btnR().wasDoubleClicked()) openAdjust(2);   // 右ダブル: 音量
         drawRandomClock();
         break;
 
@@ -1793,9 +1838,11 @@ void loop()
         break;
 
     case MODE_VOICE:
-        if (btnR().wasClicked() && voiceState == VS_LISTEN) {
+        if (btnR().wasSingleClicked() && voiceState == VS_LISTEN) {
             voicePlayback();                       // 右: もう一度「声の色」を聴く
         }
+        if (btnL().wasDoubleClicked()) openAdjust(1);   // 左ダブル: LED明るさ
+        if (btnR().wasDoubleClicked()) openAdjust(2);   // 右ダブル: 音量
         voiceLoop();
         break;
 
